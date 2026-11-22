@@ -38,6 +38,13 @@ All criteria come from the ticket, in its words.
 - **AC7.** `.github/workflows/ci.yml` runs `ruff check`, `ruff format --check` and `pytest` on every pull request into `main`, and replaces `spike-ci.yml`.
 - **AC8.** Tests cover `GET /health`, and that each of the six other endpoints answers 501. `README.md` says how to install, run (`uvicorn app.main:app`) and test.
 
+## Decisions from the plan gate
+
+These refine what AC1 and AC4 ask the contract and the models to say. They are not new criteria.
+
+- In `PATCH /tasks/{id}`, an explicit `null` for `title`, `notes` or `done` is a 422; only `due` may be null (and `null` clears it). The contract states it and the Pydantic model `TaskUpdate` enforces it, with a test.
+- `created_at` and `done_at` are sent as UTC with six fractional digits and a `Z`, for example `2026-11-22T09:30:00.123456Z`, and the contract's examples show exactly that shape.
+
 ## Files
 
 The scaffold creates these files. The three later demo issues change only their own route module and its test file:

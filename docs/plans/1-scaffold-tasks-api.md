@@ -1,10 +1,21 @@
 # Technical Plan: #1 Scaffold the Tasks API: FastAPI, its contract, and every endpoint wired
 
-**Ticket:** #1   **Spec:** [docs/specs/1-scaffold-tasks-api.md](../specs/1-scaffold-tasks-api.md)   **Status:** Draft
+**Ticket:** #1   **Spec:** [docs/specs/1-scaffold-tasks-api.md](../specs/1-scaffold-tasks-api.md)   **Status:** Draft (rework 1, after the plan gate)
 
 ## 1. Summary
 
 We create the Tasks API from an empty repository: a Python 3.11 FastAPI app with its written contract (`docs/contracts/api.md`), Pydantic models, an in-memory store behind a small interface, and three route modules that wire all six task endpoints to `501 Not Implemented`. Only `GET /health` really answers. CI (Ruff and pytest) replaces the spike workflow. The layout gives each of the three later issues one route module and one test file to change, so they can run in parallel without touching shared files.
+
+## Rework after the plan gate
+
+The plan gate rejected attempt 1 with two points, both to be fixed now because the contract is frozen after this scaffold:
+
+| Point | How this plan addresses it |
+|---|---|
+| **M1.** `TaskUpdate` must refuse an explicit `null` for `title`, `notes` and `done`; only `due` may be null. Say so in the contract and enforce it in the Pydantic model, with a test. | A3 rewritten. Section 4's `TaskUpdate` now types `title`, `notes` and `done` as non-nullable with an *unset* default, so `{"title": null}` fails validation (422) and the OpenAPI schema shows them as non-nullable; `due` stays `date \| None`. The contract's PATCH section and its "Task fields" table state the rule. Tests: model-level in `tests/test_store.py` (T2/T3) and API-level in `tests/test_task.py` (T4: `PATCH` with `{"title": null}` gets 422 even from the stub, because the body is validated first). The earlier note that "the issue implementing PATCH validates that" is removed: the model enforces it from this scaffold on. |
+| **m1.** The contract's timestamp examples must show the fractional seconds the API sends, e.g. `2026-11-22T09:30:00.123456Z`. | A5 rewritten. `created_at` and `done_at` are always serialised with exactly six fractional digits and a `Z` suffix, through one `UtcDateTime` annotated type with a serializer in `app/models.py` (Pydantic's default would drop the fraction when microseconds are 0, so a fixed format is enforced). Every example in the contract uses that shape, e.g. `2026-11-22T09:30:00.123456Z`. Test in `tests/test_store.py`: a task created at a whole second serialises `created_at` as `...T09:30:00.000000Z`. |
+
+Both behaviours were checked against Pydantic 2 while writing this rework: `{"title": null}` and `{"done": null}` are rejected, `{"due": null}` is accepted and recorded in `model_fields_set`, the schema shows `title`/`done` as plain `string`/`boolean`, and a whole-second UTC datetime dumps as `2026-11-22T09:30:00.000000Z`.
 
 ## 2. Requirements
 
@@ -38,9 +49,9 @@ Building any endpoint but `/health`; a database; sign-in; deployment.
 
 - **A1.** `notes` is a non-null string defaulting to `""` (the ticket gives only its maximum length). The TypeScript type is `string`.
 - **A2.** `title` is trimmed before its length is checked; a title that is empty after trimming is a 422. `notes` is not trimmed.
-- **A3.** `PATCH /tasks/{id}` takes any subset of `title`, `notes`, `due`, `done`; `due: null` clears the date. An empty body is valid and changes nothing. Unknown fields are rejected with 422 (`extra="forbid"`), as are `id`, `created_at` and `done_at`, which the client cannot set.
+- **A3.** `PATCH /tasks/{id}` takes any subset of `title`, `notes`, `due`, `done`; `due: null` clears the date. An explicit `null` for `title`, `notes` or `done` is a 422 (plan gate, M1): only `due` is nullable. An empty body is valid and changes nothing. Unknown fields are rejected with 422 (`extra="forbid"`), as are `id`, `created_at` and `done_at`, which the client cannot set.
 - **A4.** `GET /tasks` with no `status` means `all`; any other value is a 422. "Newest first" means by `created_at` descending, ties broken by insertion order (latest first).
-- **A5.** `created_at` and `done_at` are serialised as ISO 8601 UTC with a `Z` suffix, e.g. `2026-11-22T09:30:00Z`.
+- **A5.** `created_at` and `done_at` are serialised as ISO 8601 UTC with exactly six fractional digits (microseconds) and a `Z` suffix, e.g. `2026-11-22T09:30:00.123456Z` (plan gate, m1). The format is fixed even when the microseconds are 0 (`...:00.000000Z`), so the web app's mock and parser see one shape.
 - **A6.** The 404 body is `{"detail": "Task not found"}`. 422 uses FastAPI's default validation body, whose `detail` is a list of error objects; the contract says so rather than forcing a string (see Q1).
 - **A7.** "Pins" means exact `==` versions in `pyproject.toml`, chosen at implementation time as the latest stable releases that support Python 3.11. No lock file.
 
@@ -88,21 +99,32 @@ Route handlers take the store through FastAPI's dependency injection (`Depends(g
 
 ```python
 # app/models.py
+TitleStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+NotesStr = Annotated[str, StringConstraints(max_length=2000)]
+
+def _utc_iso(value: datetime) -> str:   # always microseconds and "Z"
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+UtcDateTime = Annotated[datetime, PlainSerializer(_utc_iso, return_type=str, when_used="json")]
+
 class TaskStatus(str, Enum):
     all = "all"; open = "open"; done = "done"
 
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
-    notes: Annotated[str, StringConstraints(max_length=2000)] = ""
+    title: TitleStr
+    notes: NotesStr = ""
     due: date | None = None
 
 class TaskUpdate(BaseModel):          # every field optional; only sent fields change
     model_config = ConfigDict(extra="forbid")
-    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)] | None = None
-    notes: Annotated[str, StringConstraints(max_length=2000)] | None = None
-    due: date | None = None
-    done: bool | None = None
+    # Non-nullable types with an unset default: absent is fine, an explicit null is a 422 (M1).
+    # Pydantic does not validate defaults, so the None default is never checked against str/bool,
+    # but a null in the request is, and fails. The JSON schema shows these as non-nullable.
+    title: TitleStr = Field(default=None)
+    notes: NotesStr = Field(default=None)
+    due: date | None = None           # the only nullable field: null clears the date
+    done: bool = Field(default=None)
 
 class Task(BaseModel):
     id: UUID
@@ -110,8 +132,8 @@ class Task(BaseModel):
     notes: str
     due: date | None
     done: bool
-    created_at: datetime              # timezone-aware UTC
-    done_at: datetime | None
+    created_at: UtcDateTime           # timezone-aware UTC, sent as 2026-11-22T09:30:00.123456Z
+    done_at: UtcDateTime | None
 
 class Summary(BaseModel):
     total: int; open: int; done: int
@@ -120,7 +142,7 @@ class Health(BaseModel):
     status: Literal["ok"]
 ```
 
-`TaskUpdate` callers use `model_dump(exclude_unset=True)` so that `due: null` (clear) differs from `due` absent (keep). `title: null` and `done: null` in a PATCH are 422 — the issue implementing PATCH validates that; the contract states it now.
+`TaskUpdate` callers use `model_dump(exclude_unset=True)` so that `due: null` (clear) differs from `due` absent (keep), and the `None` defaults of the other fields never reach the store. `title: null`, `notes: null` and `done: null` in a PATCH are rejected by the model itself (422), from this scaffold on; the contract states it.
 
 ```python
 # app/store.py — the whole interface the route issues may use
@@ -146,7 +168,8 @@ The store is implemented fully here (not stubbed), because AC4 requires its own 
 type Task = { id: string; title: string; notes: string; due: string | null;
               done: boolean; created_at: string; done_at: string | null };
 type TaskCreate = { title: string; notes?: string; due?: string | null };
-type TaskUpdate = Partial<{ title: string; notes: string; due: string | null; done: boolean }>;
+type TaskUpdate = { title?: string; notes?: string; due?: string | null; done?: boolean };
+                                              // only due may be null; null elsewhere is a 422
 type TaskStatus = "all" | "open" | "done";
 type Summary = { total: number; open: number; done: number };
 type Health = { status: "ok" };
@@ -160,10 +183,10 @@ type ErrorBody = { detail: string };          // 404, 501
 | POST | `/tasks` | `TaskCreate` | 201 `Task` | 422 |
 | GET | `/tasks/summary` | — | 200 `Summary` | — |
 | GET | `/tasks/{id}` | path `id` (UUID) | 200 `Task` | 404, 422 non-UUID id |
-| PATCH | `/tasks/{id}` | `TaskUpdate` | 200 `Task` | 404, 422 |
+| PATCH | `/tasks/{id}` | `TaskUpdate` | 200 `Task` | 404, 422 (including `null` for `title`, `notes` or `done`) |
 | DELETE | `/tasks/{id}` | — | 204, no body | 404, 422 non-UUID id |
 
-The contract also has a "Task fields" table with the AC1 rules (and A1–A5), a "Current status" note that every endpoint except `/health` answers `501 {"detail": "Not implemented"}` until its issue lands, and the CORS origin.
+The contract also has a "Task fields" table with the AC1 rules (and A1–A5, including which fields may be null in a PATCH and the exact timestamp format), example bodies whose timestamps all read like `2026-11-22T09:30:00.123456Z`, a "Current status" note that every endpoint except `/health` answers `501 {"detail": "Not implemented"}` until its issue lands, and the CORS origin.
 
 Route stubs declare their final signatures, status codes and `response_model` now, so the OpenAPI schema at `/docs` already matches the contract, and raise `HTTPException(501, "Not implemented")` in the body. Example:
 
@@ -212,7 +235,7 @@ No ADR: this is the first code in the repository and every choice is reversible;
 - Changes: `docs/contracts/api.md`, `app/models.py`.
 - Details: as section 4. Write the contract first, then the models from it.
 - Done when: AC1, AC2 (as declared), and the models half of AC4.
-- Tests: in `tests/test_store.py` (T3) — validation cases on `TaskCreate`/`TaskUpdate`: title trimmed, empty/whitespace and 201-char titles rejected, 2001-char notes rejected, bad date rejected, extra field rejected.
+- Tests: in `tests/test_store.py` (T3) — validation cases on `TaskCreate`/`TaskUpdate`: title trimmed, empty/whitespace and 201-char titles rejected, 2001-char notes rejected, bad date rejected, extra field rejected; `TaskUpdate` rejects `{"title": null}`, `{"notes": null}` and `{"done": null}`, accepts `{"due": null}` with `due` in `model_fields_set`, and an empty body leaves `model_fields_set` empty; `TaskUpdate.model_json_schema()` shows `title`, `notes`, `done` without a null type. Serialisation: a `Task` whose `created_at` is `2026-11-22T09:30:00+00:00` dumps (JSON mode) as `"2026-11-22T09:30:00.000000Z"`, and one with microseconds 123456 as `"2026-11-22T09:30:00.123456Z"`.
 - Depends on: T1.
 
 ### T3. In-memory store (S)
@@ -227,7 +250,7 @@ No ADR: this is the first code in the repository and every choice is reversible;
 - Changes: `app/main.py`, `app/routes/tasks.py`, `app/routes/task.py`, `app/routes/summary.py`, `tests/conftest.py`, `tests/test_health.py`, `tests/test_tasks.py`, `tests/test_task.py`, `tests/test_summary.py`.
 - Details: section 4. `conftest.py` fixtures: `store` → `TaskStore()`; `client` → sets `app.dependency_overrides[get_store] = lambda: store`, yields `TestClient(app)`, then clears the overrides.
 - Done when: AC3, AC5, the tests half of AC8.
-- Tests: `/health` 200 `{"status": "ok"}`; CORS preflight from `http://localhost:3000` returns `access-control-allow-origin: http://localhost:3000` and one from another origin does not; `test_tasks.py`: `GET /tasks` and `POST /tasks` (valid body) → 501 body; `test_task.py`: GET/PATCH (valid body)/DELETE on a random UUID → 501; `test_summary.py`: `GET /tasks/summary` → 501 `{"detail": "Not implemented"}`.
+- Tests: `/health` 200 `{"status": "ok"}`; CORS preflight from `http://localhost:3000` returns `access-control-allow-origin: http://localhost:3000` and one from another origin does not; `test_tasks.py`: `GET /tasks` and `POST /tasks` (valid body) → 501 body; `test_task.py`: GET/PATCH (valid body)/DELETE on a random UUID → 501, and PATCH with `{"title": null}`, `{"notes": null}` or `{"done": null}` → 422 (M1, enforced by the model before the stub runs); `test_summary.py`: `GET /tasks/summary` → 501 `{"detail": "Not implemented"}`.
 - Depends on: T3.
 
 ### Sequence
@@ -241,7 +264,7 @@ T1 → T2 → T3 → T4, one developer, one pull request (this one). Total: abou
 | AC1 | T2 | Review | Contract has seven endpoint sections, field table, Pydantic and TS side by side |
 | AC2 | T2, T4 | Review + unit | Contract lists the codes; stubs declare 201/204 status codes; OpenAPI paths match the seven endpoints (`app.openapi()["paths"]` test in `test_health.py`) |
 | AC3 | T4 | API (TestClient) | `/health` 200; six 501s; summary path reaches summary stub |
-| AC4 | T2, T3 | Unit | Model validation; store behaviour; fresh store per test |
+| AC4 | T2, T3, T4 | Unit + API | Model validation, including PATCH nulls refused for `title`/`notes`/`done` (M1) and the fixed timestamp format (m1); store behaviour; fresh store per test |
 | AC5 | T4 | API | CORS preflight allowed for `localhost:3000`, not for others |
 | AC6 | T1 | CI | `pip install -e ".[dev]"` succeeds on 3.11 |
 | AC7 | T1 | CI | The workflow runs and passes on this PR; spike workflow gone |
@@ -274,7 +297,7 @@ Taken on knowingly: in-memory storage (architecture debt; follow-up when a datab
 |---|---|---|---|---|
 | Q1 | Must 422 bodies have a string `detail`, as "Errors are `{"detail": "..."}`" could be read, or is FastAPI's list-valued `detail` acceptable? | Product owner / plan gate | No | FastAPI default; contract documents it (A6). A custom handler can be added in `main.py` if a string is required |
 | Q2 | Is the 501 stub an acceptable "off by default" in place of a feature flag for this scaffold? | Plan gate | No | Yes (section 8) |
-| Q3 | Are A1–A5 (notes default `""`, PATCH semantics, default status, timestamp format) right for the web app? | Web app owner | No | As stated |
+| Q3 | Are A1, A2 and A4 (notes default `""`, trimming, default status) right for the web app? A3's null rule and A5's timestamp format were settled at the plan gate. | Web app owner | No | As stated |
 
 ## 12. Follow-ups
 
