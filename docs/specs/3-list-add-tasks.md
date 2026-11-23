@@ -25,6 +25,10 @@ All criteria come from the ticket, in its words.
 - **In:** `app/routes/tasks.py` and `tests/test_tasks.py`.
 - **Out (from the ticket):** one task's own endpoints (`/tasks/{id}`), the summary, and any change to `docs/contracts/api.md`, `app/models.py` or `app/store.py`.
 
-## Derived requirements
+## Rollout
 
-- **D1 (derived).** The endpoints ship behind the feature flag `TASKS_LIST_CREATE_ENABLED`, off by default. While it is off they keep answering `501 {"detail": "Not implemented"}`, as the contract's "Current status" table says today; input is still validated first, so the 422s of AC2 and AC4 hold either way.
+No feature flag (decided at the plan gate): until this issue is merged, the scaffold's 501 is the off state, and merging it is the release.
+
+## Users
+
+The API is single-user, with no sign-in or ownership, as the contract says: "my tasks" means every task in the store.
