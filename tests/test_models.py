@@ -141,3 +141,61 @@ class TestTaskSerialisation:
     def test_schema_keeps_the_date_time_format(self):
         properties = Task.model_json_schema(mode="serialization")["properties"]
         assert properties["created_at"]["format"] == "date-time"
+
+
+DUE_MODELS = [
+    pytest.param(TaskCreate, {"title": "t"}, id="TaskCreate"),
+    pytest.param(TaskUpdate, {}, id="TaskUpdate"),
+]
+
+
+@pytest.mark.parametrize(("model", "base"), DUE_MODELS)
+class TestDueIsOnlyYyyyMmDd:
+    @pytest.mark.parametrize(
+        "due",
+        [
+            pytest.param(1763856000, id="int-timestamp"),
+            pytest.param(1763856000.0, id="float-timestamp"),
+            pytest.param(True, id="bool"),
+            pytest.param("1763856000", id="numeric-string"),
+            pytest.param("20261123", id="no-hyphens"),
+            pytest.param("2026-2-3", id="single-digit-month-and-day"),
+            pytest.param(" 2026-11-23", id="leading-space"),
+            pytest.param("2026-11-23 ", id="trailing-space"),
+            pytest.param("2026-11-23T00:00:00", id="datetime-string"),
+            pytest.param("2026-11-23Z", id="trailing-zone"),
+            pytest.param("23/11/2026", id="day-first"),
+            pytest.param("２０２６-11-23", id="non-ascii-digits"),
+            pytest.param("", id="empty"),
+            pytest.param(datetime(2026, 11, 23), id="datetime-instance"),
+        ],
+    )
+    def test_anything_not_shaped_yyyy_mm_dd_is_refused(self, model, base, due):
+        with pytest.raises(ValidationError):
+            model.model_validate(base | {"due": due})
+
+    @pytest.mark.parametrize("due", ["2026-02-30", "2026-13-01", "2027-02-29", "2026-00-10"])
+    def test_impossible_dates_are_refused(self, model, base, due):
+        with pytest.raises(ValidationError):
+            model.model_validate(base | {"due": due})
+
+    @pytest.mark.parametrize(
+        ("due", "expected"),
+        [
+            ("2026-11-23", date(2026, 11, 23)),
+            ("2028-02-29", date(2028, 2, 29)),
+            (date(2026, 11, 23), date(2026, 11, 23)),
+        ],
+    )
+    def test_real_dates_are_accepted(self, model, base, due, expected):
+        assert model.model_validate(base | {"due": due}).due == expected
+
+    def test_null_is_accepted_and_marked_as_sent(self, model, base):
+        parsed = model.model_validate(base | {"due": None})
+        assert parsed.due is None
+        assert "due" in parsed.model_fields_set
+
+    def test_schema_still_shows_a_date_string_or_null(self, model, base):
+        due = model.model_json_schema()["properties"]["due"]
+        assert {"type": "string", "format": "date"} in due["anyOf"]
+        assert {"type": "null"} in due["anyOf"]
