@@ -12,14 +12,13 @@ A person can read one task through the API, change any of its fields (marking it
 
 ## Acceptance criteria
 
-AC1 to AC5 come from the ticket, in its words. AC6 is derived.
+AC1 to AC5 come from the ticket, in its words. There is no feature flag: until this issue is merged, the scaffold's 501 is the off state, and merging it is the release.
 
 - **AC1.** `GET /tasks/{id}` answers 200 with the task. An unknown id is a 404 with `{"detail": "Task not found"}`, and an id that is not a UUID is a 422.
-- **AC2.** `PATCH /tasks/{id}` changes only the fields sent and answers 200 with the task after the change. `{}` changes nothing, and `due: null` clears the date. A `null` `title`, `notes` or `done`, a field breaking its rule, or any other field (`id`, `created_at` and `done_at` included) is a 422. An unknown id is a 404.
+- **AC2.** `PATCH /tasks/{id}` changes only the fields sent and answers 200 with the task after the change. `{}` changes nothing, and `due: null` clears the date. A `null` `title`, `notes` or `done`, a field breaking its rule, or any other field (`id`, `created_at` and `done_at` included) is a 422. An unknown id is a 404. (Since #9, `due` takes only a `YYYY-MM-DD` string or `null`: a number such as `1763856000` or a numeric string such as `"1763856000"` breaks its rule and is a 422.)
 - **AC3.** `done` going from false to true sets `done_at` to now. Going from true to false sets it to `null`. Sending `done` with its current value leaves `done_at` as it was.
 - **AC4.** `DELETE /tasks/{id}` answers 204 with no body, and the task is gone: a later `GET /tasks/{id}` is a 404. An unknown id is a 404, and an id that is not a UUID is a 422.
 - **AC5.** `tests/test_task.py` covers AC1 to AC4 in place of its 501 checks, seeding tasks through the store. Ruff and pytest pass in CI.
-- **AC6 (derived).** The three endpoints ship behind the environment variable `TASK_ENDPOINTS_ENABLED`, off by default. While it is off they answer `501 {"detail": "Not implemented"}` as they do today, after validating their input (so a non-UUID id or invalid body is still a 422). They behave as AC1 to AC4 only when it is `true`.
 
 ## Out of scope
 
