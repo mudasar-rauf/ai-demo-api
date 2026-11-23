@@ -12,13 +12,12 @@ A person can see through the API how many tasks they have, how many are open and
 
 ## Acceptance criteria
 
-AC1 to AC4 come from the ticket, in its words. AC5 is derived from the factory's rule that every feature ships behind a flag that is off by default.
+AC1 to AC4 come from the ticket, in its words. None are derived.
 
 - **AC1.** `GET /tasks/summary` answers 200 with `total`, `open` and `done`, counting every task. `total` is `open + done`.
 - **AC2.** With no tasks it answers `{"total": 0, "open": 0, "done": 0}`.
 - **AC3.** `/tasks/summary` is never read as a task id: it never answers a 404 or a 422.
 - **AC4.** `tests/test_summary.py` covers AC1 to AC3 in place of its 501 check, seeding tasks through the store, done and not done. Ruff and pytest pass in CI.
-- **AC5 (derived).** The endpoint is behind the environment variable `TASKS_SUMMARY_ENABLED`, off by default. While it is off, `GET /tasks/summary` answers as it does today: `501 {"detail": "Not implemented"}`. It is on only when set to `1` or `true` (any case).
 
 ## Files
 
@@ -28,3 +27,7 @@ AC1 to AC4 come from the ticket, in its words. AC5 is derived from the factory's
 ## Out of scope
 
 Listing, adding, changing or deleting tasks, and any change to `docs/contracts/api.md`, the models or the store.
+
+## Release
+
+No feature flag. Until this issue is merged, the scaffold's 501 is the off state, and merging it is the release (decided at the plan gate).
